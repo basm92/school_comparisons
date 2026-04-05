@@ -2,6 +2,12 @@
 
 This is a repository to fetch public data from the Dienst Uitvoering Onderwijs (DUO) about performance and satisfaction of elementary schools in the Netherlands, and structure quantitative data from various years together.
 
+## To Do:
+
+Debug on the basis of call:
+
+`uv run python main.py 3825 --output results.parquet --schools 5 --years 7` and manually look up a couple of websites. 
+
 ## Setup
 
 Requires [uv](https://docs.astral.sh/uv/).
