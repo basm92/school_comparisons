@@ -1,0 +1,8 @@
+requests
+beautifulsoup4
+pandas
+pyarrow
+geopy
+lxml
+playwright
+openpyxl
