@@ -1,0 +1,18 @@
+[project]
+name = "school-comparisons"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+    "beautifulsoup4",
+    "pandas",
+    "pyarrow",
+    "geopy",
+    "lxml",
+    "playwright",
+    "openpyxl",
+]
+
+[project.scripts]
+school-comparisons = "main:main"

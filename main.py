@@ -2,13 +2,13 @@
 """Dutch elementary school data pipeline.
 
 Usage:
-    python main.py <postcode> [options]
+    uv run python main.py <postcode> [options]
 
 Examples:
-    python main.py 3813
-    python main.py "3813 AB" --schools 5 --years 5
-    python main.py 3813 --output results.parquet --skip-sodk
-    python main.py 3813 -v
+    uv run python main.py 3813
+    uv run python main.py "3813 AB" --schools 5 --years 5
+    uv run python main.py 3813 --output results.parquet --skip-sodk
+    uv run python main.py 3813 -v
 """
 
 import argparse

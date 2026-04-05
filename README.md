@@ -2,6 +2,39 @@
 
 This is a repository to fetch public data from the Dienst Uitvoering Onderwijs (DUO) about performance and satisfaction of elementary schools in the Netherlands, and structure quantitative data from various years together.
 
+## Setup
+
+Requires [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync
+uv run playwright install chromium  # first time only
+```
+
+## Usage
+
+```bash
+uv run python main.py <postcode> [options]
+```
+
+Options:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--schools N` / `-n N` | 7 | Number of nearest schools |
+| `--years Y` / `-y Y` | 7 | Number of most recent years |
+| `--output FILE` / `-o FILE` | `<postcode>_schools.parquet` | Output path |
+| `--skip-sodk` | — | Skip scholenopdekaart.nl (no Playwright needed) |
+| `--verbose` / `-v` | — | Enable debug logging |
+
+Examples:
+
+```bash
+uv run python main.py 3813
+uv run python main.py "3813 AB" --schools 5 --years 5
+uv run python main.py 3813 --output results.parquet --skip-sodk
+```
+
 ## Output variable reference
 
 The Parquet file has columns `school_name`, `year`, `variable`, `value`. Variable names are prefixed by their data source.
