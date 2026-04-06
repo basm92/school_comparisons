@@ -5,9 +5,15 @@ Variable names are prefixed with 'allecijfers_'.
 """
 
 import ast
+import gzip
+import io
 import logging
 import re
 import time
+import unicodedata
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -18,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://allecijfers.nl/basisschool/"
 _SEARCH_URL = "https://allecijfers.nl/"
+_SITEMAP_URL = "https://allecijfers.nl/sitemap_onderwijs.xml.gz"
+_CACHE_DIR = Path(__file__).parent.parent / ".cache"
+_SITEMAP_CACHE_FILE = _CACHE_DIR / "allecijfers_slugs.txt"
+_SITEMAP_MAX_AGE_DAYS = 30
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -301,45 +311,139 @@ _STRIP_PREFIXES = re.compile(
 
 
 def _slug_candidates(name: str, city: str) -> list[str]:
-    """Generate ordered list of slug candidates to try on allecijfers.nl."""
-    import unicodedata
+    """Generate ordered list of slug candidates to try on allecijfers.nl.
+
+    Each name variant is tried both with and without the city suffix, because
+    allecijfers.nl only appends the city when multiple schools share a name.
+    City-qualified slugs are tried first to avoid false matches.
+    """
+    def to_slug(s: str) -> str:
+        n = unicodedata.normalize("NFKD", s)
+        a = n.encode("ascii", "ignore").decode("ascii")
+        return re.sub(r"[^a-z0-9]+", "-", a.lower()).strip("-")
+
+    candidates = []
+
+    def add(name_part: str) -> None:
+        candidates.append(to_slug(f"{name_part} {city}"))
+        candidates.append(to_slug(name_part))
+
+    # 1. Full name (with and without city)
+    add(name)
+
+    # 2. Strip common Dutch school type/denomination prefixes
+    stripped = _STRIP_PREFIXES.sub("", name).strip()
+    if stripped and stripped.lower() != name.lower():
+        add(stripped)
+
+    # 3. Strip leading "De/Het/Een/d'" articles after prefix stripping
+    no_article = re.sub(r"^(?:de|het|een|d')\s+", "", stripped, flags=re.IGNORECASE).strip()
+    if no_article and no_article.lower() != stripped.lower():
+        add(no_article)
+
+    # 4. Main keywords only (drop everything before the main noun)
+    # e.g. "P.C. basisschool De Parkschool" → "parkschool"
+    words = re.sub(r"[^a-zA-Z\s]", "", no_article).split()
+    if words:
+        main_word = words[-1] if len(words) == 1 else " ".join(words)
+        add(main_word)
+
+    return list(dict.fromkeys(candidates))  # preserve order, deduplicate
+
+
+def _load_sitemap_slugs() -> list[str]:
+    """Return list of all /basisschool/ slugs from allecijfers.nl sitemap.
+
+    Downloads and caches the gzipped sitemap XML. Re-downloads if the cache
+    is older than _SITEMAP_MAX_AGE_DAYS days.
+    """
+    _CACHE_DIR.mkdir(exist_ok=True)
+    if _SITEMAP_CACHE_FILE.exists():
+        age_days = (datetime.now(timezone.utc).timestamp() - _SITEMAP_CACHE_FILE.stat().st_mtime) / 86400
+        if age_days < _SITEMAP_MAX_AGE_DAYS:
+            return _SITEMAP_CACHE_FILE.read_text(encoding="utf-8").splitlines()
+
+    logger.info("Downloading allecijfers.nl sitemap...")
+    try:
+        resp = _SESSION.get(_SITEMAP_URL, timeout=30)
+        resp.raise_for_status()
+        xml_bytes = gzip.decompress(resp.content)
+    except Exception as exc:
+        logger.warning("Could not fetch allecijfers sitemap: %s", exc)
+        return []
+
+    root = ET.fromstring(xml_bytes)
+    ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    slugs = []
+    for url_el in root.findall("sm:url/sm:loc", ns):
+        loc = (url_el.text or "").strip()
+        m = re.match(r"https://allecijfers\.nl/basisschool/([^/]+)/$", loc)
+        if m:
+            slugs.append(m.group(1))
+
+    _SITEMAP_CACHE_FILE.write_text("\n".join(slugs), encoding="utf-8")
+    logger.info("Cached %d basisschool slugs from sitemap", len(slugs))
+    return slugs
+
+
+def _find_slug_in_sitemap(name: str, city: str) -> Optional[str]:
+    """Find the best-matching allecijfers.nl slug for a school via sitemap.
+
+    Uses normalised name similarity against all known slugs, then verifies
+    the top candidates with an HTTP check to avoid false positives.
+    """
+    import difflib
 
     def to_slug(s: str) -> str:
         n = unicodedata.normalize("NFKD", s)
         a = n.encode("ascii", "ignore").decode("ascii")
         return re.sub(r"[^a-z0-9]+", "-", a.lower()).strip("-")
 
-    city_slug = to_slug(city)
-    candidates = []
+    slugs = _load_sitemap_slugs()
+    if not slugs:
+        return None
 
-    # 1. Full name + city (original)
-    candidates.append(to_slug(f"{name} {city}"))
-
-    # 2. Strip common Dutch school type/denomination prefixes, then add city
     stripped = _STRIP_PREFIXES.sub("", name).strip()
-    if stripped and stripped.lower() != name.lower():
-        candidates.append(to_slug(f"{stripped} {city}"))
-
-    # 3. Strip leading "De/Het/Een/d'" articles after prefix stripping
     no_article = re.sub(r"^(?:de|het|een|d')\s+", "", stripped, flags=re.IGNORECASE).strip()
-    if no_article and no_article.lower() != stripped.lower():
-        candidates.append(to_slug(f"{no_article} {city}"))
 
-    # 4. Just the city + school name keywords (drop everything before the main noun)
-    # e.g. "P.C. basisschool De Parkschool" → "parkschool-amersfoort"
-    words = re.sub(r"[^a-zA-Z\s]", "", no_article).split()
-    if words:
-        main_word = words[-1] if len(words) == 1 else " ".join(words)
-        candidates.append(to_slug(f"{main_word} {city}"))
+    name_slug = to_slug(no_article or stripped or name)
+    city_slug = to_slug(city)
+    name_city_slug = to_slug(f"{no_article or stripped or name} {city}")
 
-    return list(dict.fromkeys(candidates))  # preserve order, deduplicate
+    # Score each sitemap slug
+    scored: list[tuple[float, str]] = []
+    for s in slugs:
+        if s == name_city_slug:
+            scored.append((2.0, s))
+        elif s == name_slug:
+            scored.append((1.9, s))
+        else:
+            ratio = difflib.SequenceMatcher(None, name_slug, s).ratio()
+            # Boost if city name appears in slug (reduces cross-city false matches)
+            if city_slug in s:
+                ratio += 0.1
+            scored.append((ratio, s))
+
+    scored.sort(key=lambda x: -x[0])
+
+    # Verify top candidates (up to 5) with an HTTP check
+    for score, slug in scored[:5]:
+        if score < 0.7:
+            break
+        if _fetch_page(slug) is not None:
+            logger.info("Sitemap match for '%s': %s (score=%.2f)", name, slug, score)
+            return slug
+        time.sleep(0.2)
+
+    return None
 
 
 def _search_school(school_name: str, city: str) -> Optional[str]:
     """Try slug candidates on allecijfers.nl and return the working slug.
 
     allecijfers.nl search is JavaScript-rendered, so we probe candidate slugs
-    directly rather than using the search form.
+    directly rather than using the search form. Falls back to sitemap-based
+    fuzzy matching if all generated candidates fail.
     """
     for slug in _slug_candidates(school_name, city):
         url = f"{_BASE_URL}{slug}/"
@@ -351,7 +455,7 @@ def _search_school(school_name: str, city: str) -> Optional[str]:
             time.sleep(0.2)
         except requests.RequestException:
             pass
-    return None
+    return _find_slug_in_sitemap(school_name, city)
 
 
 def fetch(school: dict, n_years: int = 7) -> pd.DataFrame:
