@@ -154,17 +154,17 @@ def frontier_distance_2d(points_norm: np.ndarray, efficient_mask: np.ndarray) ->
     # Build segments
     segments = []
 
-    # Left extension: from (x0, 0) up to (x0, y0)
+    # Left extension: horizontal from y-axis to leftmost efficient point
     x0, y0 = eff[0]
-    segments.append((np.array([x0, 0.0]), np.array([x0, y0])))
+    segments.append((np.array([0.0, y0]), np.array([x0, y0])))
 
     # Segments between consecutive efficient points
     for i in range(len(eff) - 1):
         segments.append((eff[i], eff[i + 1]))
 
-    # Right extension: from (xN, yN) rightward to (1, yN)
+    # Right extension: vertical from rightmost efficient point down to x-axis
     xN, yN = eff[-1]
-    segments.append((np.array([xN, yN]), np.array([1.0, yN])))
+    segments.append((np.array([xN, yN]), np.array([xN, 0.0])))
 
     dists = np.array([
         min(_point_to_segment_dist(p, a, b) for a, b in segments)
@@ -248,11 +248,11 @@ def plot_scatter(wide: pd.DataFrame, variables: list[str], efficient_mask: np.nd
 
     frontier_pts = []
     x0n, y0n = eff_norm_sorted[0]
-    frontier_pts.append(to_orig([x0n, 0.0]))
+    frontier_pts.append(to_orig([0.0, y0n]))   # left: horizontal extension to y-axis
     for pt in eff_norm_sorted:
         frontier_pts.append(to_orig(pt))
     xNn, yNn = eff_norm_sorted[-1]
-    frontier_pts.append(to_orig([1.0, yNn]))
+    frontier_pts.append(to_orig([xNn, 0.0]))   # right: vertical extension to x-axis
 
     fx = [p[0] for p in frontier_pts]
     fy = [p[1] for p in frontier_pts]
