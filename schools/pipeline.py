@@ -6,7 +6,7 @@ from typing import Optional
 
 import pandas as pd
 
-from . import allecijfers, discovery, duo, scholenopdekaart
+from . import allecijfers, discovery, duo, duo_datasets, scholenopdekaart
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,16 @@ def run(
         name = school["name"]
         logger.info("Fetching data for: %s", name)
 
-        # allecijfers.nl — test scores, uitstroom, weights
+        # DUO CKAN datasets — schooladvies, referentieniveaus, zittenblijvers, leerlingen
+        # Listed first so dedup keeps authoritative DUO data over scraped fallbacks.
+        try:
+            df_ckan = duo_datasets.fetch(school, n_years)
+            logger.info("  DUO CKAN: %d rows", len(df_ckan))
+            frames.append(df_ckan)
+        except Exception as exc:
+            logger.error("  DUO CKAN error for %s: %s", name, exc)
+
+        # allecijfers.nl — test scores (with gemeente/NL benchmarks), schoolweging
         try:
             df_ac = allecijfers.fetch(school, n_years)
             logger.info("  allecijfers: %d rows", len(df_ac))
@@ -48,13 +57,13 @@ def run(
         except Exception as exc:
             logger.error("  allecijfers error for %s: %s", name, exc)
 
-        # DUO open data — student counts, doorstroomtoets, schooladvies
+        # DUO open data — bekostigde leerlingen count
         try:
             df_duo = duo.fetch(school, n_years)
-            logger.info("  DUO: %d rows", len(df_duo))
+            logger.info("  DUO leerlingen: %d rows", len(df_duo))
             frames.append(df_duo)
         except Exception as exc:
-            logger.error("  DUO error for %s: %s", name, exc)
+            logger.error("  DUO leerlingen error for %s: %s", name, exc)
 
         # scholenopdekaart.nl — parent satisfaction, fundamenteel/streefniveau
         if not skip_sodk:

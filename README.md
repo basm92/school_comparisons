@@ -2,12 +2,6 @@
 
 This is a repository to fetch public data from the Dienst Uitvoering Onderwijs (DUO) about performance and satisfaction of elementary schools in the Netherlands, and structure quantitative data from various years together.
 
-## To Do:
-
-Debug on the basis of call:
-
-`uv run python main.py 3825 --output results.parquet --schools 5 --years 7` and manually look up a couple of websites. 
-
 ## Setup
 
 Requires [uv](https://docs.astral.sh/uv/).
@@ -64,9 +58,38 @@ The Parquet file has columns `school_name`, `year`, `variable`, `value`. Variabl
 
 ### DUO open data (`duo_`)
 
+These variables come from two DUO sources: annual CSV files published at `duo.nl/open_onderwijsdata` (leerlingen) and the CKAN open data portal at `onderwijsdata.duo.nl` (all others). The CKAN datasets cover multiple years per school and are authoritative — they take precedence over allecijfers.nl in deduplication.
+
+#### Leerlingen (bekostigd)
+
 | Variable | Unit | Description |
 |---|---|---|
 | `duo_leerlingen_bekostigd` | count | Number of government-funded (bekostigde) pupils registered at the school on 1 February of the reference year, as published by DUO. Slightly different from `allecijfers_aantal_leerlingen` because of different reference dates. |
+
+#### CKAN datasets (multi-year, per vestiging)
+
+| Variable | Unit | Description |
+|---|---|---|
+| `duo_leerlingen_totaal` | count | Total enrolled pupils summed across all leerjaren (groep 1–8) for the schooljaar. |
+| `duo_pct_zittenblijvers` | % | Percentage of pupils held back (zittenblijvers) in the schooljaar, calculated as (zittenblijvers / total leerlingen) × 100. |
+| `duo_pct_fundamenteel_taal_lv` | % | Percentage of groep-8 pupils achieving the fundamenteel niveau for Taal Leesvaardigheid (1F or 2F). |
+| `duo_pct_fundamenteel_taal_tv` | % | Percentage achieving fundamenteel niveau for Taal Taalverzorging. |
+| `duo_pct_fundamenteel_reken` | % | Percentage achieving fundamenteel niveau for Rekenen (1F or higher). |
+| `duo_pct_streef_taal_lv` | % | Percentage achieving the streefniveau for Taal Leesvaardigheid (2F). |
+| `duo_pct_streef_taal_tv` | % | Percentage achieving the streefniveau for Taal Taalverzorging (2F). |
+| `duo_pct_streef_reken` | % | Percentage achieving the streefniveau for Rekenen (1S or 2F). |
+| `duo_schooladvies_vwo_pct` | % | Share of groep-8 pupils receiving a VWO school advice. |
+| `duo_schooladvies_havo_pct` | % | Share receiving HAVO advice. |
+| `duo_schooladvies_havo_vwo_pct` | % | Share receiving combined HAVO/VWO advice. |
+| `duo_schooladvies_vmbo_gt_pct` | % | Share receiving VMBO-GT (theoretisch/gemengd) advice. |
+| `duo_schooladvies_vmbo_gt_havo_pct` | % | Share receiving combined VMBO-GT/HAVO advice. |
+| `duo_schooladvies_vmbo_k_gt_pct` | % | Share receiving combined VMBO-K/GT advice. |
+| `duo_schooladvies_vmbo_bk_pct` | % | Share receiving VMBO-B or VMBO-K (basis/kaderberoepsgericht) advice. |
+| `duo_schooladvies_vmbo_b_pct` | % | Share receiving VMBO-B advice. |
+| `duo_schooladvies_vmbo_k_pct` | % | Share receiving VMBO-K advice. |
+| `duo_schooladvies_pro_pct` | % | Share receiving Praktijkonderwijs advice. |
+| `duo_schooladvies_vso_pct` | % | Share receiving Voortgezet Speciaal Onderwijs advice. |
+| `duo_schooladvies_overig_pct` | % | Share with other/unknown school advice. |
 
 ### Scholen op de Kaart (`scholenopdekaart_`)
 

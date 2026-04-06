@@ -48,9 +48,14 @@ def _download_csv(url: str, cache_name: str) -> Optional[bytes]:
             logger.debug("Not found (status %d): %s", resp.status_code, url)
             return None
         resp.raise_for_status()
-        path.write_bytes(resp.content)
+        # Detect HTML soft-404 (server returns 200 but with an HTML error page)
+        content = resp.content
+        if content[:100].lstrip().lower().startswith((b"<!doctype", b"<html")):
+            logger.debug("Soft-404 (HTML response) for %s", url)
+            return None
+        path.write_bytes(content)
         time.sleep(0.3)
-        return resp.content
+        return content
     except requests.RequestException as exc:
         logger.warning("Download failed %s: %s", url, exc)
         return None

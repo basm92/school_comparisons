@@ -48,7 +48,10 @@ def _parse_tevredenheid(html: str) -> list[dict]:
     rows = []
 
     # Rapportcijfer: "rapportcijfer van X,X" or "rapportcijfer: X,X"
+    # Allow integer grades (e.g. "8") as well as decimal (e.g. "8,0")
     score = _extract_number(html, r"rapportcijfer[^0-9]*?(\d+[,\.]\d+)")
+    if score is None:
+        score = _extract_number(html, r"rapportcijfer[^0-9]*?(\d+)")
     if score is not None:
         rows.append({"variable": "scholenopdekaart_oudertevredenheid_rapportcijfer", "value": score})
 
@@ -187,7 +190,10 @@ def _name_similarity(a: str, b: str) -> float:
     import unicodedata
     def normalize(s: str) -> set:
         n = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-        words = re.sub(r"[^a-z0-9\s]", "", n.lower()).split()
+        # Replace hyphens/slashes with spaces BEFORE stripping punctuation,
+        # so "Kon-Tiki" → "kon tiki" (two words) not "kontiki" (one word).
+        n = re.sub(r"[-/]", " ", n.lower())
+        words = re.sub(r"[^a-z0-9\s]", "", n).split()
         # Remove very common Dutch school words for better matching
         stopwords = {"basisschool", "school", "de", "het", "een", "van", "bs", "obs", "ikc", "kc"}
         return {w for w in words if w not in stopwords and len(w) > 2}
@@ -199,49 +205,105 @@ def _name_similarity(a: str, b: str) -> float:
     return len(intersection) / max(len(words_a), len(words_b))
 
 
+def _collect_school_links(page) -> list[str]:
+    """Collect all school links from the current page matching SODK URL pattern.
+
+    Scrolls repeatedly to trigger lazy-loaded school card content, then waits
+    for network to settle before collecting all anchor hrefs.
+    """
+    # Scroll down in steps to trigger intersection-observer lazy loading
+    for _ in range(3):
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_timeout(600)
+    # Final pause to let any async card renders settle
+    page.wait_for_timeout(400)
+
+    all_hrefs = page.eval_on_selector_all("a[href]", "els => els.map(el => el.href)")
+    candidates = []
+    seen = set()
+    for href in all_hrefs:
+        m = re.match(r"(https?://[^/]+/basisscholen/[^/]+/\d+/[^/]+/?)$", href)
+        if m:
+            url = href.rstrip("/") + "/"
+            if url not in seen:
+                seen.add(url)
+                candidates.append(url)
+    logger.debug("_collect_school_links: found %d candidate links", len(candidates))
+    if candidates:
+        logger.debug("  first 3: %s", candidates[:3])
+    return candidates
+
+
+def _best_match(school_name: str, candidates: list[str]) -> tuple[Optional[str], float]:
+    """Return (best_url, best_score) from candidate URLs by name similarity."""
+    best_url = None
+    best_score = 0.0
+    for href in candidates:
+        slug_m = re.search(r"/\d+/([^/]+)/?$", href)
+        slug = slug_m.group(1) if slug_m else ""
+        score = _name_similarity(school_name, slug.replace("-", " "))
+        if score > best_score:
+            best_score = score
+            best_url = href
+    return best_url, best_score
+
+
 def _find_school_url(page, school_name: str, city: str) -> Optional[str]:
-    """Find a school's scholenopdekaart.nl URL via the city schools listing page."""
+    """Find a school's scholenopdekaart.nl URL.
+
+    Strategy:
+    1. Navigate to the city listing page and collect all school links.
+    2. If no confident match found (some schools live under district sub-slugs
+       like 'dj-amersfoort' instead of 'amersfoort'), fall back to SODK's
+       site-wide search page.
+    """
     city_slug = re.sub(r"[^a-z0-9]+", "-", city.strip().lower()).strip("-")
     city_url = f"{_BASE_URL}basisscholen/{city_slug}/"
     try:
         page.goto(city_url, wait_until="networkidle", timeout=30000)
+        candidates = _collect_school_links(page)
 
-        # Collect all school links with numeric codes: /basisscholen/{city}/{code}/{slug}/
-        all_hrefs = page.eval_on_selector_all(
-            "a[href]", "els => els.map(el => el.href)"
+        best_url, best_score = _best_match(school_name, candidates)
+        logger.debug("City page best match for '%s': %s (score=%.2f)", school_name, best_url, best_score)
+
+        if best_score >= 0.2:
+            logger.info("Matched '%s' to %s via city page (score=%.2f)", school_name, best_url, best_score)
+            return best_url
+
+        # Fallback: SODK search page (handles district sub-slugs and alternate city names)
+        # Try multiple query variations: full name, then key words only.
+        logger.info(
+            "City page gave low confidence (%.2f) for %s — trying SODK search",
+            best_score, school_name,
         )
-        candidates = []
-        for href in all_hrefs:
-            m = re.match(
-                r"(https?://[^/]+/basisscholen/[^/]+/\d+/[^/]+/?)$", href
-            )
-            if m:
-                candidates.append(href.rstrip("/") + "/")
+        from urllib.parse import quote_plus
+        import unicodedata as _ud
 
-        if not candidates:
-            logger.warning("No school links found on city page: %s", city_url)
-            return None
+        def _key_words(name: str) -> str:
+            """Extract meaningful search keywords from a school name."""
+            n = _ud.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+            words = re.sub(r"[^a-z0-9\s]", "", n.lower()).split()
+            stopwords = {"basisschool", "school", "de", "het", "een", "van", "bs", "obs",
+                         "ikc", "kc", "pc", "rk", "cbs", "obs", "chr", "prot"}
+            key = [w for w in words if w not in stopwords and len(w) > 2]
+            return " ".join(key) if key else name
 
-        # Score by name similarity, pick the best match
-        best_url = None
-        best_score = 0.0
-        for href in candidates:
-            # Extract slug from URL to compare with school name
-            slug_m = re.search(r"/\d+/([^/]+)/?$", href)
-            slug = slug_m.group(1) if slug_m else ""
-            score = _name_similarity(school_name, slug.replace("-", " "))
-            if score > best_score:
-                best_score = score
-                best_url = href
+        for query in [school_name, _key_words(school_name)]:
+            search_url = f"{_BASE_URL}basisscholen/?q={quote_plus(query)}"
+            page.goto(search_url, wait_until="networkidle", timeout=30000)
+            search_candidates = _collect_school_links(page)
 
-        if best_score < 0.2:
-            logger.warning(
-                "Low confidence match (%.2f) for %s on SODK", best_score, school_name
-            )
-            return None
+            if search_candidates:
+                best_url, best_score = _best_match(school_name, search_candidates)
+                if best_score >= 0.15:
+                    logger.info(
+                        "Matched '%s' to %s via search q=%r (score=%.2f)",
+                        school_name, best_url, query, best_score,
+                    )
+                    return best_url
 
-        logger.info("Matched '%s' to %s (score=%.2f)", school_name, best_url, best_score)
-        return best_url
+        logger.warning("Could not find SODK URL for %s (%s) — best score %.2f", school_name, city, best_score)
+        return None
 
     except Exception as exc:
         logger.warning("Failed to find SODK URL for %s: %s", school_name, exc)
@@ -249,9 +311,15 @@ def _find_school_url(page, school_name: str, city: str) -> Optional[str]:
 
 
 def _scrape_page(page, url: str, timeout: int = 20000) -> Optional[str]:
-    """Navigate to URL and return page HTML after JS render."""
+    """Navigate to URL and return page HTML after JS render.
+
+    Returns None if the page is not found (HTTP 4xx) or fails to load.
+    """
     try:
-        page.goto(url, wait_until="networkidle", timeout=timeout)
+        response = page.goto(url, wait_until="networkidle", timeout=timeout)
+        if response is not None and response.status >= 400:
+            logger.debug("HTTP %d for %s", response.status, url)
+            return None
         return page.content()
     except Exception as exc:
         logger.warning("Failed to load %s: %s", url, exc)
@@ -307,20 +375,32 @@ def fetch(school: dict, n_years: int = 7) -> pd.DataFrame:
             logger.info("SODK URL for %s: %s", school_name, base_url)
 
             def _extract_year(html: str) -> Optional[int]:
-                """Extract the most plausible survey/data year from page HTML.
+                """Extract the most plausible data year from page HTML.
 
-                Looks for recent school years (e.g. '2024-2025' or '2024')
-                in contexts that suggest data year, not navigation/copyright.
+                Prefers schooljaar patterns (e.g. '2023-2024') found in the
+                first 5000 characters (title + main content) to avoid picking
+                up copyright or navigation years in the footer.
                 """
                 import datetime
                 current = datetime.date.today().year
-                # Prefer schooljaar pattern like "2023-2024" or "2024-2025"
-                for m in re.finditer(r"(20\d{2})[-/–](20\d{2})", html):
-                    y = int(m.group(2))
-                    if current - 5 <= y <= current + 1:
-                        return y
-                # Fall back to standalone year in a data context
-                for m in re.finditer(r"\b(20\d{2})\b", html):
+
+                def _search_zone(text: str) -> Optional[int]:
+                    for m in re.finditer(r"(20\d{2})[-/\u2013](20\d{2})", text):
+                        y = int(m.group(2))
+                        if current - 5 <= y <= current + 1:
+                            return y
+                    return None
+
+                # 1. Prefer early content (before footer/boilerplate)
+                year = _search_zone(html[:5000])
+                if year:
+                    return year
+                # 2. Full page fallback
+                year = _search_zone(html)
+                if year:
+                    return year
+                # 3. Standalone year near data-related words
+                for m in re.finditer(r"\b(20\d{2})\b", html[:8000]):
                     y = int(m.group(1))
                     if current - 3 <= y <= current + 1:
                         return y
@@ -336,13 +416,19 @@ def fetch(school: dict, n_years: int = 7) -> pd.DataFrame:
                 rows.extend(tev_rows)
                 time.sleep(1)
 
-            # Step 3: Resultaten page (may be /resultaten/ or /leerlingresultaten/)
+            # Step 3: Resultaten page — try leerlingresultaten/ first (current SODK layout),
+            # then fall back to older subpage names.
             res_html = None
-            for res_subpage in ("resultaten/", "leerlingresultaten/", "onderwijskwaliteit/"):
+            for res_subpage in ("leerlingresultaten/", "resultaten/", "onderwijskwaliteit/"):
                 html_candidate = _scrape_page(page, base_url + res_subpage)
-                if html_candidate and "niet gevonden" not in html_candidate.lower()[:500]:
-                    res_html = html_candidate
-                    break
+                if html_candidate is None:
+                    continue
+                # Soft-404: page exists but shows "not found" content
+                body_lower = html_candidate.lower()
+                if "niet gevonden" in body_lower[:2000] or "pagina bestaat niet" in body_lower[:2000]:
+                    continue
+                res_html = html_candidate
+                break
             if res_html:
                 res_rows = _parse_leerlingresultaten(res_html)
                 year = _extract_year(res_html)
