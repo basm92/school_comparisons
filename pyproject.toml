@@ -12,6 +12,7 @@ dependencies = [
     "lxml",
     "playwright",
     "openpyxl",
+    "matplotlib",
 ]
 
 [project.scripts]
