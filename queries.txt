@@ -1,0 +1,3 @@
+uv run python main.py 3825 --schools 10 --years 6 --output results.parquet
+
+uv run python analysis.py results.parquet --type average --year 2023 2024 2025 --variable duo_pct_streef_reken duo_pct_streef_taal_lv duo_pct_streef_taal_tv duo_schooladvies_vwo_pct scholenopdekaart_schooladvies_vwo_pct scholenopdekaart_pct_streefniveau
